@@ -162,3 +162,71 @@
         })))
     )
 )
+
+
+(define-public (complete-auction (auction-id uint))
+    (let 
+        (
+            (auction (unwrap! (map-get? auctions auction-id) ERR-NOT-FOUND))
+            (talent-data (unwrap! (map-get? talents tx-sender) ERR-NOT-FOUND))
+        )
+        ;; State checks
+        (asserts! (check-auction-active auction-id) ERR-AUCTION-NOT-ACTIVE)
+        (asserts! (>= stacks-block-height (get end-height auction)) ERR-AUCTION-NOT-ENDED)
+        (asserts! (is-eq (get talent auction) tx-sender) ERR-NOT-AUTHORIZED)
+
+        ;; Check if there was a bid
+        (asserts! (is-some (get highest-bidder auction)) ERR-INVALID-STATE)
+
+        ;; Transfer payment to talent
+        (try! (as-contract (stx-transfer? 
+            (get highest-bid auction)
+            tx-sender 
+            (get talent auction)
+        )))
+
+        ;; Update talent stats
+        (map-set talents tx-sender (merge talent-data {
+            total-earnings: (+ (get total-earnings talent-data) (get highest-bid auction)),
+            auctions-completed: (+ (get auctions-completed talent-data) u1)
+        }))
+
+        ;; Update global stats
+        (var-set total-auctions-completed (+ (var-get total-auctions-completed) u1))
+
+        (ok (map-set auctions auction-id (merge auction {
+            status: "completed"
+        })))
+    )
+)
+
+;; Read-only Functions
+(define-read-only (get-auction (auction-id uint))
+    (map-get? auctions auction-id)
+)
+
+(define-read-only (get-talent-info (address principal))
+    (map-get? talents address)
+)
+
+(define-read-only (get-contract-stats)
+    {
+        total-auctions: (var-get total-auctions-completed),
+        total-fees: (var-get total-fees-collected)
+    }
+)
+
+(define-read-only (is-registered (address principal))
+    (is-some (map-get? talents address))
+)
+
+(define-read-only (can-complete-auction (auction-id uint))
+    (match (map-get? auctions auction-id)
+        auction (and 
+            (is-eq (get status auction) "active")
+            (>= stacks-block-height (get end-height auction))
+            (is-some (get highest-bidder auction))
+        )
+        false
+    )
+)
