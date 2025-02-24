@@ -230,3 +230,90 @@
         false
     )
 )
+
+
+;;  Cancel Auction Function
+(define-public (cancel-auction (auction-id uint))
+    (let 
+        (
+            (auction (unwrap! (map-get? auctions auction-id) ERR-NOT-FOUND))
+        )
+        ;; State checks
+        (asserts! (is-eq (get talent auction) tx-sender) ERR-NOT-AUTHORIZED)
+        (asserts! (check-auction-active auction-id) ERR-AUCTION-NOT-ACTIVE)
+
+        ;; Refund highest bidder if exists
+        (match (get highest-bidder auction) prev-bidder
+            (try! (as-contract (stx-transfer? (get highest-bid auction) tx-sender prev-bidder)))
+            true
+        )
+
+        ;; Update auction status
+        (ok (map-set auctions auction-id (merge auction {
+            status: "cancelled"
+        })))
+    )
+)
+
+
+;; Read-only function to get a single auction's status and talent
+(define-read-only (is-active-talent-auction (id uint) (talent-address principal))
+    (match (map-get? auctions id)
+        auction (and 
+            (is-eq (get talent auction) talent-address)
+            (is-eq (get status auction) "active")
+        )
+        false
+    )
+)
+
+;; Rate Talent Function (can only be called by highest bidder after auction completion)
+(define-public (rate-talent (auction-id uint) (rating uint))
+    (let 
+        (
+            (auction (unwrap! (map-get? auctions auction-id) ERR-NOT-FOUND))
+            (talent-data (unwrap! (map-get? talents (get talent auction)) ERR-NOT-FOUND))
+        )
+        ;; Validation
+        (asserts! (and (>= rating u1) (<= rating u5)) (err u16)) ;; Rating must be 1-5
+        (asserts! (is-eq (get status auction) "completed") ERR-INVALID-STATE)
+        (asserts! (is-eq (some tx-sender) (get highest-bidder auction)) ERR-NOT-AUTHORIZED)
+
+        ;; Calculate new average rating
+        (let 
+            (
+                (current-rating (get rating talent-data))
+                (completed-auctions (get auctions-completed talent-data))
+                (new-rating (/ (+ (* current-rating completed-auctions) rating) 
+                             (+ completed-auctions u1)))
+            )
+
+            ;; Update talent rating
+            (ok (map-set talents (get talent auction) (merge talent-data {
+                rating: new-rating
+            })))
+        )
+    )
+)
+
+;; Read-only function to check a single auction's status and talent
+(define-read-only (get-active-auction (auction-id uint) (talent-address principal))
+    (match (map-get? auctions auction-id)
+        auction (if (and 
+            (is-eq (get talent auction) talent-address)
+            (is-eq (get status auction) "active"))
+            (ok auction-id)
+            (err u0)
+        )
+        (err u0)
+    )
+)
+
+
+;; Private helper to add value to list if result is ok
+(define-private (add-if-ok (result (response uint uint)) (acc (list 5 uint)))
+    (match result
+        success (unwrap! (as-max-len? (append acc success) u5) acc)
+        error acc
+    )
+)
